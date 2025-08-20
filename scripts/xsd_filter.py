@@ -4,29 +4,24 @@ import argparse
 import glob
 from pathlib import Path
 from lxml import etree
-
-def xsd_ok(x: str, xsd_path: str):
-    if not xsd_path or not os.path.isfile(xsd_path):
-        return None, "no_xsd"
-    try:
-        schema = etree.XMLSchema(etree.parse(xsd_path))
-        xml = etree.fromstring(x.encode("utf-8"))
-        return schema.validate(xml), None
-    except Exception as e:
-        return False, str(e)
+from xsd_validator import xsd_ok
 
 def main():
     parser = argparse.ArgumentParser(description="Validate .xosc files against OpenSCENARIO XSD and export only valid ones.")
     parser.add_argument("--input_dir", default="./resources/original/original_scenarios", help="Directory containing .xosc files.")
     parser.add_argument("--xsd_dir", default="xsd/OpenSCENARIO.xsd", help="Path to the OpenSCENARIO XSD file.")
+    parser.add_argument("--output_dir", default="./resources/original/original_validated", help="Directory to save validated .xosc files.")
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
     xsd_path = args.xsd_dir  # this is a file path
+    output_dir = Path(args.output_dir)
 
     if not input_dir.exists():
         print(f"[ERRORE] input_dir non esiste: {input_dir}")
         return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     xosc_paths = sorted(glob.glob(str(input_dir / "*.xosc")))
     if not xosc_paths:
@@ -53,19 +48,27 @@ def main():
         name = Path(p).name
 
         if valid is True:
-            print(f"[OK]  {name} -> VALIDO")
-            ok_count += 1
+            out_file = output_dir / name
+            try:
+                with open(out_file, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(content)
+                print(f"[OK]  {name} -> salvato in {out_file}")
+                ok_count += 1
+            except Exception as e:
+                print(f"[FAIL] Scrittura fallita per {name}: {e}")
+                fail_count += 1
         elif valid is None:
             print(f"[ERRORE] XSD non trovato/valido ({xsd_path}). Interrompo.")
             return
         else:
-            print(f"[NOPE] {name} NON valido XSD. Dettagli: {err}")
+            print(f"[NOPE] {name} non valido XSD. Dettagli: {err}")
             skip_count += 1
 
     print("\n=== RIEPILOGO ===")
     print(f"Validi e salvati: {ok_count}")
     print(f"Non validi / saltati: {skip_count}")
     print(f"Errori di scrittura: {fail_count}")
+    print(f"Output dir: {output_dir.resolve()}")
 
 if __name__ == "__main__":
     main()

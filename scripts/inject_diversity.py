@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 # importiamo xsd_ok dal modulo separato
-from xsd_validator import xsd_ok
+from xsd_filter import xsd_ok
 
 # === Config probabilità ===
 SEED = 42  # cambia o rimuovi per non avere riproducibilità

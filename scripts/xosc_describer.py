@@ -29,35 +29,60 @@ def extract_features_from_xosc(xosc_text: str) -> dict:
     # Environment / TimeOfDay / Weather
     tod = root.find(".//Environment/TimeOfDay")
     if tod is not None:
+        # Preferisci dateTime; se assente, metti animation (true/false) come fallback
         feat["time_of_day"] = tod.attrib.get("dateTime") or tod.attrib.get("animation") or None
 
     w = root.find(".//Environment/Weather")
     if w is not None:
         feat["weather"]["cloud_state"] = w.attrib.get("cloudState")
-        feat["weather"]["precipitation"] = w.attrib.get("precipitationType") or w.attrib.get("precipitation")
-        fog = w.find(".//Fog")
+
+        # <Precipitation intensity="..." precipitationType="rain|snow|..." />
+        prec = w.find("./Precipitation")
+        if prec is not None:
+            ptype = prec.attrib.get("precipitationType")
+            pint  = prec.attrib.get("intensity")
+            if ptype and pint:
+                feat["weather"]["precipitation"] = f"{ptype} (intensity={pint})"
+            elif ptype:
+                feat["weather"]["precipitation"] = ptype
+            elif pint:
+                feat["weather"]["precipitation"] = f"intensity={pint}"
+
+        fog = w.find("./Fog")
         if fog is not None:
             feat["weather"]["fog"] = fog.attrib.get("visualRange")
-        wind = w.find(".//Wind")
-        if wind is not None:
-            feat["weather"]["wind"] = wind.attrib.get("direction") or wind.attrib.get("speed")
 
-    # Entities
-    for ent in root.findall(".//Entities/*"):
-        tag = ent.tag.lower()
+        # Alcuni XOSC hanno <Wind direction="..." speed="..."/>
+        wind = w.find("./Wind")
+        if wind is not None:
+            direction = wind.attrib.get("direction")
+            speed = wind.attrib.get("speed")
+            if direction and speed:
+                feat["weather"]["wind"] = f"dir={direction}, speed={speed}"
+            else:
+                feat["weather"]["wind"] = direction or speed
+
+    # Entities (ScenarioObject -> Vehicle/Pedestrian/MiscObject)
+    for ent in root.findall(".//Entities/ScenarioObject"):
         name = ent.attrib.get("name") or ent.attrib.get("nameRef")
-        etype = "vehicle"
-        if "pedestrian" in tag:
+        etype = "vehicle"  # default
+        if ent.find("./Pedestrian") is not None:
             etype = "pedestrian"
-        elif "misc" in tag:
+        elif ent.find("./MiscObject") is not None:
             etype = "misc"
+        elif ent.find("./Vehicle") is not None:
+            etype = "vehicle"
+
+        if name == "ego_vehicle":
+            etype = "ego"
+
         if name:
             feat["entities"].append({"name": name, "type": etype})
 
-    # Initial positions (Init -> Private -> TeleportAction / WorldPosition)
+    # Initial positions: SOLO TeleportAction/WorldPosition (non includere AcquirePositionAction)
     for priv in root.findall(".//Init/Actions/Private"):
         name = priv.attrib.get("entityRef")
-        wp = priv.find(".//WorldPosition")
+        wp = priv.find("./PrivateAction/TeleportAction/Position/WorldPosition")
         if wp is not None:
             feat["initial_positions"].append({
                 "entity": name,
@@ -68,21 +93,53 @@ def extract_features_from_xosc(xosc_text: str) -> dict:
     # Events & Triggers
     for ev in root.findall(".//Storyboard//Event"):
         ev_name = ev.attrib.get("name")
-        act = ev.find(".//Action")
-        trig = ev.find(".//StartTrigger") or ev.find(".//ConditionGroup")
-        desc = []
-        if ev_name: desc.append(ev_name)
-        if trig is not None:
-            for cond in trig.findall(".//ByValueCondition/SimulationTimeCondition"):
-                delay = cond.attrib.get("value")
-                if delay:
-                    desc.append(f"after {delay}s")
-        if act is not None:
-            atag = next((c.tag for c in list(act) if isinstance(c.tag, str)), None)
-            if atag:
-                desc.append(atag)
-        if desc:
-            feat["events"].append(" ".join(desc))
+        # Può esserci più di un <Action> per evento
+        actions = ev.findall("./Action")
+        start_trig = ev.find("./StartTrigger")
+        desc_bits = []
+        if ev_name:
+            desc_bits.append(ev_name)
+
+        # Estrai condizioni di start: ByValueCondition/SimulationTimeCondition
+        if start_trig is not None:
+            for cond in start_trig.findall(".//ByValueCondition/SimulationTimeCondition"):
+                val = cond.attrib.get("value")
+                rule = cond.attrib.get("rule")
+                if val:
+                    if rule:
+                        desc_bits.append(f"when sim_time {rule} {val}s")
+                    else:
+                        desc_bits.append(f"after {val}s")
+
+        # Tipi di azione (foglia più informativa, es. ActivateControllerAction, SpeedAction, ecc.)
+        action_types = []
+        for act in actions:
+            # cerca la prima foglia significativa dentro <Action>
+            stack = list(act)
+            leaf_type = None
+            while stack:
+                node = stack.pop(0)
+                children = list(node)
+                if not children:
+                    # usa il tag della foglia
+                    if isinstance(node.tag, str):
+                        leaf_type = node.tag
+                        break
+                else:
+                    stack.extend(children)
+            if leaf_type is None:
+                # fallback: primo figlio diretto di Action (PrivateAction/GlobalAction/..)
+                child = next((c for c in list(act) if isinstance(c.tag, str)), None)
+                if child is not None:
+                    leaf_type = child.tag
+            if leaf_type:
+                action_types.append(leaf_type)
+
+        if action_types:
+            desc_bits.append("actions=" + ",".join(action_types))
+
+        if desc_bits:
+            feat["events"].append(" ".join(desc_bits))
 
     return feat
 
